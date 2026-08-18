@@ -79,8 +79,7 @@ Pin consumers to an immutable commit SHA until a reviewed `v1` release exists.
 
 Each caller needs:
 
-1. Access to this private repository through the organization's GitHub Actions
-   access settings.
+1. Read access to this public repository from GitHub Actions.
 2. GitHub Environments such as `qa` and `prod`, with `WG_CONF_B64`,
    `KUBECONFIG_B64`, and `SOPS_AGE_KEY` secrets and production approvals where
    appropriate.
@@ -88,6 +87,37 @@ Each caller needs:
 
 Only trusted repositories should be granted access because their deployment
 scripts execute while connected to the homelab.
+
+### Bootstrap an application environment
+
+An administrator can create namespace-scoped Kubernetes credentials and upload
+all required GitHub Environment secrets with:
+
+```shell
+scripts/setup-deploy-environment.sh \
+  --repo devtin/stillwondering.io \
+  --environment production \
+  --namespace stillwondering \
+  --context homelab-admin \
+  --wireguard-config /secure/path/wg0.conf \
+  --age-key ~/.config/sops/age/keys.txt
+```
+
+The helper displays its targets and asks for confirmation before changing the
+cluster or GitHub. It creates a namespace, ServiceAccount, namespaced Role and
+RoleBinding, and a dedicated service-account token. It then builds a temporary
+kubeconfig, stores `WG_CONF_B64`, `KUBECONFIG_B64`, and `SOPS_AGE_KEY` in the
+selected GitHub Environment, and removes the temporary kubeconfig.
+
+The generated credential is intentionally limited to common Helm-managed
+namespaced resources, including workloads, Services, Secrets, ConfigMaps,
+cert-manager Certificates, and Traefik routes and middleware. Review the Role in
+the helper before using it for an application that needs other resource types.
+
+The helper uses a long-lived service-account token because GitHub-hosted runners
+cannot request an in-cluster token. Delete the generated token Secret before
+re-running the helper when that credential must be rotated, or replace it with
+workload identity when the cluster supports an external OIDC trust relationship.
 
 ## Versioning
 

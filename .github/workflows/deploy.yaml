@@ -125,7 +125,7 @@ jobs:
           printf '%s' "$WIREGUARD_CONFIG_B64" | base64 --decode > "$WG_CONFIG_PATH"
           chmod 600 "$WG_CONFIG_PATH"
           timeout 90s sudo wg-quick up "$WG_CONFIG_PATH"
-          sudo wg show
+          sudo wg show interfaces
 
       - name: Configure Kubernetes access
         shell: bash
