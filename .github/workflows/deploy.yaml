@@ -103,13 +103,24 @@ jobs:
 
       - name: Install WireGuard, Age, and SOPS
         shell: bash
+        timeout-minutes: 5
         env:
           SOPS_VERSION: ${{ inputs.sops_version }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y age ca-certificates curl resolvconf wireguard-tools
-          sudo curl -fsSL \
+          apt_options=(
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=20
+            -o Acquire::https::Timeout=20
+          )
+          sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y \
+            age ca-certificates curl resolvconf wireguard-tools
+          sudo curl --fail --silent --show-error --location \
+            --connect-timeout 20 \
+            --max-time 60 \
+            --retry 3 \
+            --retry-all-errors \
             -o /usr/local/bin/sops \
             "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
           sudo chmod +x /usr/local/bin/sops
@@ -122,6 +133,10 @@ jobs:
           WIREGUARD_CONFIG_B64: ${{ secrets.WG_CONF_B64 }}
         run: |
           set -euo pipefail
+          [[ -n "$WIREGUARD_CONFIG_B64" ]] || {
+            echo "WG_CONF_B64 is empty in environment '$DEPLOY_ENVIRONMENT'" >&2
+            exit 1
+          }
           printf '%s' "$WIREGUARD_CONFIG_B64" | base64 --decode > "$WG_CONFIG_PATH"
           chmod 600 "$WG_CONFIG_PATH"
           timeout 90s sudo wg-quick up "$WG_CONFIG_PATH"
@@ -129,14 +144,19 @@ jobs:
 
       - name: Configure Kubernetes access
         shell: bash
+        timeout-minutes: 2
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
         run: |
           set -euo pipefail
+          [[ -n "$KUBECONFIG_B64" ]] || {
+            echo "KUBECONFIG_B64 is empty in environment '$DEPLOY_ENVIRONMENT'" >&2
+            exit 1
+          }
           printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$KUBECONFIG"
           chmod 600 "$KUBECONFIG"
           kubectl config current-context
-          kubectl --namespace "$DEPLOY_NAMESPACE" get deployments
+          kubectl --request-timeout=30s --namespace "$DEPLOY_NAMESPACE" get deployments
 
       - name: Run application deployment
         shell: bash
