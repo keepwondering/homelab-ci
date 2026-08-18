@@ -33,7 +33,7 @@ The script also receives these environment variables:
 - `DEPLOY_ENVIRONMENT`: environment supplied by the caller
 - `DEPLOY_NAMESPACE`: Kubernetes namespace supplied by the caller
 - `KUBECONFIG`: path to the temporary kubeconfig
-- `SOPS_AGE_KEY`: Age private key supplied by the caller
+- `SOPS_AGE_KEY`: Age private key from the selected GitHub environment
 - `GITHUB_TOKEN`: available through the standard GitHub Actions context when needed
 
 The script must fail with a non-zero exit code if validation or deployment fails.
@@ -71,10 +71,6 @@ jobs:
       deploy_sha: ${{ inputs.sha || github.sha }}
       namespace: wims
       rollout_selector: app.kubernetes.io/name=wims
-    secrets:
-      wireguard_config: ${{ secrets.WG_CONF_B64 }}
-      kubeconfig: ${{ secrets.KUBECONFIG_B64 }}
-      sops_age_key: ${{ secrets.SOPS_AGE_KEY }}
 ```
 
 Pin consumers to an immutable commit SHA until a reviewed `v1` release exists.
@@ -85,11 +81,10 @@ Each caller needs:
 
 1. Access to this private repository through the organization's GitHub Actions
    access settings.
-2. `WG_CONF_B64`, `KUBECONFIG_B64`, and `SOPS_AGE_KEY` secrets, preferably as
-   organization secrets restricted to approved repositories.
-3. GitHub Environments such as `qa` and `prod`, with production approvals where
+2. GitHub Environments such as `qa` and `prod`, with `WG_CONF_B64`,
+   `KUBECONFIG_B64`, and `SOPS_AGE_KEY` secrets and production approvals where
    appropriate.
-4. Read access to its GitHub Container Registry packages.
+3. Read access to its GitHub Container Registry packages.
 
 Only trusted repositories should be granted access because their deployment
 scripts execute while connected to the homelab.
