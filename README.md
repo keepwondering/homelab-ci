@@ -1,11 +1,24 @@
 # homelab-ci
 
-Reusable GitHub Actions workflows for deploying trusted projects into the
+Shared GitHub Actions automation for deploying trusted projects into the
 `keepwondering` homelab.
 
-## Helm deployment workflow
+## Deployment action
 
-`.github/workflows/deploy.yaml` owns the shared deployment infrastructure:
+The repository's composite action owns the shared deployment infrastructure
+while allowing the calling job to retain access to its GitHub Environment
+secrets. The caller must check out the requested revision first and provide
+`WG_CONF_B64`, `KUBECONFIG_B64`, and `SOPS_AGE_KEY` through the action step's
+environment.
+
+## Legacy reusable workflow
+
+`.github/workflows/deploy.yaml` remains available for same-owner callers that
+can pass secrets across the reusable-workflow boundary. The composite action is
+required when deployment credentials are stored as GitHub Environment secrets
+in a repository owned outside `keepwondering`.
+
+Both entrypoints own the shared deployment infrastructure:
 
 - selecting and checking out the requested revision
 - authenticating to GitHub Container Registry
@@ -65,12 +78,23 @@ permissions:
 
 jobs:
   deploy:
-    uses: keepwondering/homelab-ci/.github/workflows/deploy.yaml@v1
-    with:
-      environment: ${{ inputs.target }}
-      deploy_sha: ${{ inputs.sha || github.sha }}
-      namespace: wims
-      rollout_selector: app.kubernetes.io/name=wims
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - uses: keepwondering/homelab-ci@v1
+        with:
+          environment: ${{ inputs.target }}
+          deploy_sha: ${{ inputs.sha || github.sha }}
+          namespace: wims
+          rollout_selector: app.kubernetes.io/name=wims
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WG_CONF_B64: ${{ secrets.WG_CONF_B64 }}
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
 ```
 
 Pin consumers to an immutable commit SHA until a reviewed `v1` release exists.
@@ -86,7 +110,9 @@ Each caller needs:
 3. Read access to its GitHub Container Registry packages.
 
 Only trusted repositories should be granted access because their deployment
-scripts execute while connected to the homelab.
+scripts execute while connected to the homelab. Prefer the composite action for
+cross-owner callers because environment secrets do not cross a reusable-workflow
+boundary.
 
 ### Bootstrap an application environment
 

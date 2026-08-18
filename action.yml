@@ -1,0 +1,162 @@
+name: Deploy to homelab
+description: Connect to the homelab and run an application-owned deployment script
+
+inputs:
+  environment:
+    description: Application environment to deploy
+    required: true
+  deploy_sha:
+    description: Full checked-out commit SHA to deploy
+    required: true
+  namespace:
+    description: Kubernetes namespace used for connectivity checks and rollout waits
+    required: true
+  deploy_script:
+    description: Repository-relative deployment script
+    required: false
+    default: scripts/ci-deploy.sh
+  rollout_selector:
+    description: Optional Kubernetes label selector for deployments to await
+    required: false
+    default: ""
+  rollout_timeout:
+    description: Timeout passed to kubectl rollout status
+    required: false
+    default: 5m
+  kubectl_version:
+    description: kubectl version
+    required: false
+    default: v1.30.0
+  helm_version:
+    description: Helm version
+    required: false
+    default: v3.15.4
+  sops_version:
+    description: SOPS version
+    required: false
+    default: 3.11.0
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare runtime paths
+      shell: bash
+      run: |
+        echo "KUBECONFIG=$RUNNER_TEMP/homelab-kubeconfig" >> "$GITHUB_ENV"
+        echo "WG_CONFIG_PATH=$RUNNER_TEMP/wg0.conf" >> "$GITHUB_ENV"
+
+    - name: Authenticate to GitHub Container Registry
+      shell: bash
+      run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: ${{ inputs.kubectl_version }}
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: ${{ inputs.helm_version }}
+
+    - name: Install WireGuard, Age, and SOPS
+      shell: bash
+      env:
+        SOPS_VERSION: ${{ inputs.sops_version }}
+      run: |
+        set -euo pipefail
+        apt_options=(
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=20
+          -o Acquire::https::Timeout=20
+        )
+        timeout 5m sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" update
+        timeout 5m sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y \
+          age ca-certificates curl resolvconf wireguard-tools
+        sudo curl --fail --silent --show-error --location \
+          --connect-timeout 20 \
+          --max-time 60 \
+          --retry 3 \
+          --retry-all-errors \
+          -o /usr/local/bin/sops \
+          "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+        sudo chmod +x /usr/local/bin/sops
+        sops --version
+        age --version
+
+    - name: Connect to homelab
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ -n "${WIREGUARD_CONFIG_B64:-}" ]] || {
+          echo "WG_CONF_B64 is empty in environment '${{ inputs.environment }}'" >&2
+          exit 1
+        }
+        printf '%s' "$WIREGUARD_CONFIG_B64" | base64 --decode > "$WG_CONFIG_PATH"
+        chmod 600 "$WG_CONFIG_PATH"
+        timeout 90s sudo wg-quick up "$WG_CONFIG_PATH"
+        sudo wg show interfaces
+
+    - name: Configure Kubernetes access
+      shell: bash
+      run: |
+        set -euo pipefail
+        [[ -n "${KUBECONFIG_B64:-}" ]] || {
+          echo "KUBECONFIG_B64 is empty in environment '${{ inputs.environment }}'" >&2
+          exit 1
+        }
+        printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$KUBECONFIG"
+        chmod 600 "$KUBECONFIG"
+        kubectl config current-context
+        timeout 2m kubectl --request-timeout=30s --namespace "${{ inputs.namespace }}" get deployments
+
+    - name: Run application deployment
+      shell: bash
+      env:
+        DEPLOY_SCRIPT: ${{ inputs.deploy_script }}
+        DEPLOY_SHA: ${{ inputs.deploy_sha }}
+        DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        DEPLOY_NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        set -euo pipefail
+        if [[ "$DEPLOY_SCRIPT" = /* || "$DEPLOY_SCRIPT" == *..* ]]; then
+          echo "deploy_script must be a repository-relative path without '..'" >&2
+          exit 1
+        fi
+        if [[ ! -f "$DEPLOY_SCRIPT" ]]; then
+          echo "Deployment script '$DEPLOY_SCRIPT' does not exist" >&2
+          exit 1
+        fi
+        bash "$DEPLOY_SCRIPT" "$DEPLOY_SHA" "$DEPLOY_ENVIRONMENT"
+
+    - name: Wait for deployments
+      if: inputs.rollout_selector != ''
+      shell: bash
+      env:
+        DEPLOY_NAMESPACE: ${{ inputs.namespace }}
+        ROLLOUT_SELECTOR: ${{ inputs.rollout_selector }}
+        ROLLOUT_TIMEOUT: ${{ inputs.rollout_timeout }}
+      run: |
+        set -euo pipefail
+        mapfile -t deployments < <(
+          kubectl --namespace "$DEPLOY_NAMESPACE" get deployments \
+            --selector "$ROLLOUT_SELECTOR" \
+            --output jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+        )
+        if (( ${#deployments[@]} == 0 )); then
+          echo "No deployments matched selector '$ROLLOUT_SELECTOR'" >&2
+          exit 1
+        fi
+        for deployment in "${deployments[@]}"; do
+          kubectl --namespace "$DEPLOY_NAMESPACE" rollout status \
+            "deployment/$deployment" \
+            --timeout "$ROLLOUT_TIMEOUT"
+        done
+
+    - name: Disconnect from homelab
+      if: always()
+      shell: bash
+      run: |
+        if [[ -f "${WG_CONFIG_PATH:-}" ]] && sudo wg show interfaces | grep -qx wg0; then
+          sudo wg-quick down "$WG_CONFIG_PATH" || true
+        fi
