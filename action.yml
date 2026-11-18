@@ -43,7 +43,7 @@ runs:
       shell: bash
       run: |
         echo "KUBECONFIG=$RUNNER_TEMP/homelab-kubeconfig" >> "$GITHUB_ENV"
-        echo "WG_CONFIG_PATH=$RUNNER_TEMP/wg0.conf" >> "$GITHUB_ENV"
+        echo "WG_CONFIG_PATH=/etc/wireguard/wg0.conf" >> "$GITHUB_ENV"
 
     - name: Authenticate to GitHub Container Registry
       shell: bash
@@ -92,8 +92,9 @@ runs:
           echo "WG_CONF_B64 is empty in environment '${{ inputs.environment }}'" >&2
           exit 1
         }
-        printf '%s' "$WG_CONF_B64" | base64 --decode > "$WG_CONFIG_PATH"
-        chmod 600 "$WG_CONFIG_PATH"
+        sudo install -d -m 700 /etc/wireguard
+        sudo install -m 600 /dev/null "$WG_CONFIG_PATH"
+        printf '%s' "$WG_CONF_B64" | base64 --decode | sudo tee "$WG_CONFIG_PATH" > /dev/null
         timeout 90s sudo wg-quick up "$WG_CONFIG_PATH"
         sudo wg show interfaces
 
@@ -157,6 +158,7 @@ runs:
       if: always()
       shell: bash
       run: |
-        if [[ -f "${WG_CONFIG_PATH:-}" ]] && sudo wg show interfaces | grep -qx wg0; then
+        if sudo wg show interfaces | tr ' ' '\n' | grep -qx wg0; then
           sudo wg-quick down "$WG_CONFIG_PATH" || true
         fi
+        sudo rm -f "$WG_CONFIG_PATH"
